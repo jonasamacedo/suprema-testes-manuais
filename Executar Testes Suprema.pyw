@@ -6,7 +6,7 @@ import json
 import re
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 ROOT = Path(__file__).resolve().parent
 def listar_roteiros():
@@ -18,11 +18,34 @@ STATUS = ("Não executado", "Aprovado", "Reprovado", "Bloqueado")
 
 
 def carregar_roteiro(caminho):
-    partes = re.split(r"(?m)^(CT\d{2} — .+)$", caminho.read_text(encoding="utf-8-sig"))
+    return interpretar_roteiro(caminho.read_text(encoding="utf-8-sig"))
+
+
+def interpretar_roteiro(texto):
+    partes = re.split(r"(?m)^(CT\d{2} — .+)$", texto)
     return partes[0].strip(), [
         (titulo[:4], titulo, texto.strip())
         for titulo, texto in zip(partes[1::2], partes[2::2])
     ]
+
+
+def secoes_do_roteiro(texto):
+    rotulos = {
+        "Dados": "Dados",
+        "Passos": "Passos para executar",
+        "Esperado": "Resultado esperado",
+    }
+    padrao = r"(?m)^(Dados|Passos|Esperado):[ \t]*"
+    marcadores = list(re.finditer(padrao, texto))
+    if not marcadores:
+        return [("Roteiro", texto)]
+    secoes = []
+    if texto[:marcadores[0].start()].strip():
+        secoes.append(("Roteiro", texto[:marcadores[0].start()].strip()))
+    for indice, marcador in enumerate(marcadores):
+        fim = marcadores[indice + 1].start() if indice + 1 < len(marcadores) else len(texto)
+        secoes.append((rotulos[marcador[1]], texto[marcador.end():fim].strip()))
+    return secoes
 
 
 def salvar_resultados(caminho, resultados):
@@ -154,8 +177,12 @@ class Aplicativo:
         cabecalho = ttk.Frame(quadro)
         cabecalho.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         ttk.Label(cabecalho, text="Solicitação e requisito").pack(anchor="w")
-        self.seletor = ttk.Combobox(cabecalho, values=tuple(self.roteiros), state="readonly", width=40)
-        self.seletor.pack(anchor="w", pady=(4, 8))
+        escolhas = ttk.Frame(cabecalho)
+        escolhas.pack(anchor="w", pady=(4, 8))
+        self.seletor = ttk.Combobox(escolhas, values=tuple(self.roteiros), state="readonly", width=36)
+        self.seletor.pack(side="left")
+        ttk.Button(escolhas, text="Incluir solicitação e requisito", command=lambda: self.editar_roteiro(novo=True)).pack(side="left", padx=6)
+        ttk.Button(escolhas, text="Editar roteiro", command=self.editar_roteiro).pack(side="left")
         self.seletor.bind("<<ComboboxSelected>>", self.trocar_roteiro)
         self.resumo = ttk.Label(cabecalho)
         self.resumo.pack(anchor="w")
@@ -166,7 +193,8 @@ class Aplicativo:
         detalhe.grid(row=1, column=1, sticky="nsew")
         self.titulo = ttk.Label(detalhe, wraplength=560, font=("Segoe UI", 13, "bold"))
         self.titulo.pack(anchor="w")
-        self.passos = tk.Text(detalhe, wrap="word", height=8, font=("Segoe UI", 10))
+        self.passos = scrolledtext.ScrolledText(detalhe, wrap="word", height=8, font=("Segoe UI", 10))
+        self.passos.tag_configure("secao", font=("Segoe UI", 10, "bold"), foreground="#14596b")
         self.passos.pack(fill="both", expand=True, pady=8)
         ttk.Label(detalhe, text="Resultado").pack(anchor="w")
         self.status = ttk.Combobox(detalhe, values=STATUS, state="readonly")
@@ -191,6 +219,75 @@ class Aplicativo:
         ttk.Button(botoes, text="Exportar CSV", command=self.exportar).pack(side="right")
         janela.protocol("WM_DELETE_WINDOW", self.fechar)
         self.abrir_roteiro(next(iter(self.roteiros)))
+
+    def editar_roteiro(self, novo=False):
+        if not self.salvar(atualizar=False):
+            return
+        nome_atual = self.roteiro_atual
+        janela = tk.Toplevel(self.janela)
+        janela.title("Incluir solicitação e requisito" if novo else "Editar roteiro")
+        janela.geometry("760x580")
+        janela.transient(self.janela)
+        quadro = ttk.Frame(janela, padding=12)
+        quadro.pack(fill="both", expand=True)
+        if novo:
+            campos = ttk.Frame(quadro)
+            campos.pack(fill="x", pady=(0, 6))
+            ttk.Label(campos, text="Nº da solicitação").grid(row=0, column=0, sticky="w")
+            solicitacao = ttk.Entry(campos, width=18)
+            solicitacao.grid(row=1, column=0, sticky="w", padx=(0, 12))
+            ttk.Label(campos, text="Nº do requisito").grid(row=0, column=1, sticky="w")
+            requisito = ttk.Entry(campos, width=12)
+            requisito.grid(row=1, column=1, sticky="w")
+            requisito.insert(0, "1")
+        else:
+            ttk.Label(quadro, text=nome_atual).pack(anchor="w", pady=(0, 6))
+        ttk.Label(quadro, text="Use CT01 — Título e preencha Dados, Passos e Esperado em cada caso.").pack(anchor="w")
+        campo = scrolledtext.ScrolledText(quadro, wrap="word", font=("Segoe UI", 10))
+        campo.pack(fill="both", expand=True, pady=6)
+        modelo = ("SUPREMA — Solicitação e requisito\n"
+                  "Preparação: empresa, período, build e base de teste.\n\n"
+                  "CT01 — Título do caso\n"
+                  "Dados: informe a massa e as condições.\n"
+                  "Passos:\n1. Descreva a primeira ação.\n"
+                  "Esperado: descreva o que deve ser observado.")
+        campo.insert("1.0", modelo if novo else self.roteiros[nome_atual].read_text(encoding="utf-8-sig"))
+
+        def gravar():
+            chave = nome_atual
+            texto = campo.get("1.0", "end-1c").strip()
+            _, casos = interpretar_roteiro(texto)
+            ids = [codigo for codigo, _, _ in casos]
+            try:
+                if novo:
+                    numeros = (solicitacao.get().strip().lstrip("#"), requisito.get().strip())
+                    if any(not re.fullmatch(r"[0-9]+", numero) or int(numero) == 0 for numero in numeros):
+                        raise ValueError("Informe números positivos para a solicitação e o requisito.")
+                    numero_solicitacao, numero_requisito = map(int, numeros)
+                    chave = f"{numero_solicitacao} - Requisito {numero_requisito}"
+                if not casos or len(ids) != len(set(ids)):
+                    raise ValueError("Inclua ao menos um caso e use um código CT diferente para cada caso.")
+                if any(not {"Passos para executar", "Resultado esperado"} <=
+                       {rotulo for rotulo, valor in secoes_do_roteiro(corpo) if valor}
+                       for _, _, corpo in casos):
+                    raise ValueError("Preencha Passos e Esperado em todos os casos.")
+                if novo and any(k.casefold() == chave.casefold() for k in listar_roteiros()):
+                    raise ValueError("Já existe um roteiro com esse nome.")
+                destino = ROOT / f"Casos de Teste - {chave}.txt" if novo else self.roteiros[nome_atual]
+                with destino.open("x" if novo else "w", encoding="utf-8-sig") as arquivo:
+                    arquivo.write(texto + "\n")
+                self.roteiros = listar_roteiros()
+                self.seletor.configure(values=tuple(self.roteiros))
+                self.abrir_roteiro(chave)
+            except (ValueError, OSError) as erro:
+                messagebox.showerror("Falha ao salvar roteiro", str(erro), parent=janela)
+                return
+            janela.destroy()
+
+        ttk.Button(quadro, text="Salvar roteiro", command=gravar).pack(anchor="e")
+        janela.grab_set()
+        if novo:
+            solicitacao.focus_set()
 
     def abrir_roteiro(self, nome):
         referencia, casos = carregar_roteiro(self.roteiros[nome])
@@ -230,7 +327,10 @@ class Aplicativo:
         self.titulo.config(text=titulo)
         self.passos.config(state="normal")
         self.passos.delete("1.0", tk.END)
-        self.passos.insert("1.0", texto)
+        for rotulo, conteudo in secoes_do_roteiro(texto):
+            self.passos.insert(tk.END, rotulo + "\n", "secao")
+            self.passos.insert(tk.END, conteudo + "\n\n")
+        self.passos.see("1.0")
         self.passos.config(state="disabled")
         self.status.set(registro.get("status", STATUS[0]))
         for chave, campo in self.campos.items():
