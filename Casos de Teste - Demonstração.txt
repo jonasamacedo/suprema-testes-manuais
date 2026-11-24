@@ -1,0 +1,11 @@
+ROTEIRO DE DEMONSTRAÇÃO
+Cenários fictícios para conhecer a interface de execução manual.
+
+CT01 — Conferir lançamento
+Dados: documento fictício de R$ 100,00.
+Passos: abrir o lançamento na base de teste e conferir o total.
+Esperado: o lançamento apresenta R$ 100,00.
+
+CT02 — Conferir relatório
+Passos: gerar o relatório para o período da demonstração.
+Esperado: o documento fictício aparece uma vez no relatório.

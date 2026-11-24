@@ -1,0 +1,7 @@
+Resultados - *.json
+Relat*.html
+*.csv
+Suprema Testes Manuais/
+.venv/
+__pycache__/
+*.tmp
