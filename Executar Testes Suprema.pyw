@@ -17,6 +17,64 @@ def listar_roteiros():
 STATUS = ("Não executado", "Aprovado", "Reprovado", "Bloqueado")
 
 
+ASSINATURA_PADRAO = "Atenciosamente,\nJonas Arcelino de Macêdo"
+TIPOS_ACHADO = ("Ajuste", "Adaptação", "Implementação", "Erro de fábrica")
+MODELO_ACHADO = """PROBLEMA:
+
+
+COMO SIMULAR:
+
+
+RESULTADO ESPERADO:
+
+
+BASE/ARQUIVOS:
+
+
+EMPRESA:
+
+
+PERÍODO:
+"""
+
+
+def assinatura_do_relatorio(resultados):
+    return resultados.get("_relatorio", {}).get("assinatura", ASSINATURA_PADRAO)
+
+
+def texto_achado(achado):
+    titulo = f"{achado['tipo']} — {achado['titulo']}"
+    if achado.get("versao"):
+        titulo += f" (versão prevista: {achado['versao']})"
+    return titulo + "\n" + achado["descricao"]
+
+
+def exportar_txt(caminho, nome, casos, resultados):
+    linhas = [f"Resultado da homologação — {nome}", ""]
+    for codigo, titulo, roteiro in casos:
+        registro = resultados.get(codigo, {})
+        linhas += [titulo, f"Resultado: {registro.get('status', STATUS[0])}"]
+        for rotulo, valor in (
+            ("Resultado esperado", roteiro.partition("Esperado:")[2].strip()),
+            ("Resultado observado", registro.get("observado", "")),
+            ("Observações", registro.get("notas", "")),
+        ):
+            if valor.strip():
+                linhas.append(f"{rotulo}: {valor.strip()}")
+        imagens, outras = evidencias_do_caso(nome, codigo, registro.get("evidencias", ""))
+        if imagens or outras:
+            linhas.append("Evidências para anexar:")
+            linhas.extend(f"- {imagem.name}" for imagem in imagens)
+            linhas.extend(f"- {ref}" for ref in outras)
+        for achado in registro.get("achados", []):
+            linhas.extend(("", texto_achado(achado)))
+        linhas.append("")
+    assinatura = assinatura_do_relatorio(resultados)
+    if assinatura:
+        linhas.append(assinatura)
+    Path(caminho).write_text("\n".join(linhas).rstrip() + "\n", encoding="utf-8-sig")
+
+
 def carregar_roteiro(caminho):
     return interpretar_roteiro(caminho.read_text(encoding="utf-8-sig"))
 
@@ -156,7 +214,12 @@ def exportar_relatorio(caminho, nome, referencia, casos, resultados):
         if outras:
             refs = e(chr(10).join(outras))
             trechos.append(f'<strong>Outras referências</strong><p class="texto">{refs}</p>')
+        for achado in registro.get("achados", []):
+            trechos.append(f'<strong>Achado</strong><p class="texto">{e(texto_achado(achado))}</p>')
         trechos.append('</article>')
+    assinatura = assinatura_do_relatorio(resultados)
+    if assinatura:
+        trechos.append(f'<footer class="texto">{e(assinatura)}</footer>')
     Path(caminho).write_text("\n".join(trechos) + '</body></html>', encoding="utf-8")
 
 
@@ -186,6 +249,13 @@ class Aplicativo:
         self.seletor.bind("<<ComboboxSelected>>", self.trocar_roteiro)
         self.resumo = ttk.Label(cabecalho)
         self.resumo.pack(anchor="w")
+        acoes = ttk.Frame(cabecalho)
+        acoes.pack(anchor="w", pady=(5, 0))
+        ttk.Button(acoes, text="Assinatura…", command=self.editar_assinatura).pack(side="left")
+        ttk.Button(acoes, text="Exportar TXT", command=self.relatorio_txt).pack(side="left", padx=6)
+        self.botao_achados = ttk.Button(acoes, text="Achados do caso…", command=self.editar_achados)
+        self.botao_achados.pack(side="left")
+
         self.lista = tk.Listbox(quadro, width=36, exportselection=False)
         self.lista.grid(row=1, column=0, sticky="ns", padx=(0, 12))
         self.lista.bind("<<ListboxSelect>>", self.selecionar)
@@ -333,6 +403,9 @@ class Aplicativo:
         self.passos.see("1.0")
         self.passos.config(state="disabled")
         self.status.set(registro.get("status", STATUS[0]))
+        quantidade = len(registro.get("achados", []))
+        self.botao_achados.config(text=f"Achados do caso ({quantidade})…" if quantidade else "Achados do caso…")
+
         for chave, campo in self.campos.items():
             campo.delete("1.0", tk.END)
             campo.insert("1.0", registro.get(chave, ""))
@@ -350,12 +423,8 @@ class Aplicativo:
             registro[chave] != anterior.get(chave, "") for chave in self.campos
         ):
             novos = {**self.resultados, codigo: {**anterior, **registro}}
-            try:
-                salvar_resultados(self.arquivo_resultados, novos)
-            except OSError as erro:
-                messagebox.showerror("Falha ao salvar", str(erro), parent=self.janela)
+            if not self.persistir(novos, self.janela):
                 return False
-            self.resultados = novos
         if atualizar:
             self.mostrar(self.indice)
         return True
@@ -385,6 +454,122 @@ class Aplicativo:
         texto.pack(fill="both", expand=True, padx=12, pady=12)
         texto.insert("1.0", self.referencia)
         texto.config(state="disabled")
+
+    def persistir(self, novos, janela):
+        try:
+            salvar_resultados(self.arquivo_resultados, novos)
+        except OSError as erro:
+            messagebox.showerror("Falha ao salvar", str(erro), parent=janela)
+            return False
+        self.resultados = novos
+        return True
+
+    def editar_assinatura(self):
+        if not self.salvar(atualizar=False):
+            return
+        janela = tk.Toplevel(self.janela)
+        janela.title("Assinatura do relatório")
+        janela.transient(self.janela)
+        janela.grab_set()
+        campo = tk.Text(janela, width=46, height=4)
+        campo.pack(padx=12, pady=12)
+        campo.insert("1.0", assinatura_do_relatorio(self.resultados))
+
+        def gravar():
+            metadados = {**self.resultados.get("_relatorio", {}), "assinatura": campo.get("1.0", "end-1c").strip()}
+            if self.persistir({**self.resultados, "_relatorio": metadados}, janela):
+                janela.destroy()
+
+        ttk.Button(janela, text="Salvar assinatura", command=gravar).pack(pady=(0, 12))
+
+    def editar_achados(self):
+        if not self.salvar(atualizar=False):
+            return
+        codigo = self.casos[self.indice][0]
+        registro = self.resultados.get(codigo, {})
+        achados = list(registro.get("achados", []))
+        janela = tk.Toplevel(self.janela)
+        janela.title(f"{codigo} | Achados")
+        janela.geometry("760x600")
+        janela.transient(self.janela)
+        janela.grab_set()
+        quadro = ttk.Frame(janela, padding=12)
+        quadro.pack(fill="both", expand=True)
+        selecao = ttk.Combobox(quadro, state="readonly")
+        selecao.pack(fill="x", pady=(0, 8))
+        entradas = {}
+        for chave, rotulo in (("tipo", "Tipo"), ("titulo", "Título"), ("versao", "Versão prevista (opcional)")):
+            ttk.Label(quadro, text=rotulo).pack(anchor="w")
+            campo = ttk.Combobox(quadro, values=TIPOS_ACHADO, state="readonly") if chave == "tipo" else ttk.Entry(quadro)
+            campo.pack(fill="x", pady=(0, 5))
+            entradas[chave] = campo
+        corpo = scrolledtext.ScrolledText(quadro, wrap="word", height=12)
+        corpo.pack(fill="both", expand=True)
+
+        def carregar(indice):
+            selecao.configure(values=("Novo achado", *(f"{a['tipo']} — {a['titulo']}" for a in achados)))
+            selecao.current(indice)
+            achado = achados[indice - 1] if indice else {}
+            entradas["tipo"].set(achado.get("tipo", TIPOS_ACHADO[0]))
+            for chave in ("titulo", "versao"):
+                entradas[chave].delete(0, tk.END)
+                entradas[chave].insert(0, achado.get(chave, ""))
+            corpo.delete("1.0", tk.END)
+            corpo.insert("1.0", achado.get("descricao", MODELO_ACHADO))
+
+        def gravar():
+            achado = {chave: campo.get().strip() for chave, campo in entradas.items()}
+            achado["descricao"] = corpo.get("1.0", "end-1c").strip()
+            if not achado["titulo"] or not achado["descricao"] or achado["descricao"] == MODELO_ACHADO.strip():
+                messagebox.showerror("Preencha o achado", "Informe o título e descreva o que foi observado.", parent=janela)
+                return
+            indice = selecao.current()
+            atualizados = achados.copy()
+            if indice:
+                atualizados[indice - 1] = achado
+            else:
+                atualizados.append(achado)
+            novos = {**self.resultados, codigo: {**registro, "achados": atualizados}}
+            if self.persistir(novos, janela):
+                janela.destroy()
+                self.mostrar(self.indice)
+
+        def exportar_achado():
+            indice = selecao.current()
+            if not indice:
+                messagebox.showinfo("Exportar achado", "Salve o achado e selecione-o para exportar.", parent=janela)
+                return
+            caminho = filedialog.asksaveasfilename(
+                parent=janela, defaultextension=".txt", initialfile=f"Achado - {self.roteiro_atual} - {codigo}.txt",
+                filetypes=[("Texto", "*.txt")],
+            )
+            if caminho:
+                try:
+                    texto = f"Solicitação {self.roteiro_atual} | {codigo}\n\n" + texto_achado(achados[indice - 1])
+                    assinatura = assinatura_do_relatorio(self.resultados)
+                    Path(caminho).write_text(texto + ("\n\n" + assinatura if assinatura else "") + "\n", encoding="utf-8-sig")
+                except OSError as erro:
+                    messagebox.showerror("Falha ao exportar achado", str(erro), parent=janela)
+
+        selecao.bind("<<ComboboxSelected>>", lambda _: carregar(selecao.current()))
+        botoes = ttk.Frame(quadro)
+        botoes.pack(fill="x", pady=(8, 0))
+        ttk.Button(botoes, text="Salvar achado", command=gravar).pack(side="left")
+        ttk.Button(botoes, text="Exportar achado salvo em TXT", command=exportar_achado).pack(side="left", padx=6)
+        carregar(1 if achados else 0)
+
+    def relatorio_txt(self):
+        if not self.salvar():
+            return
+        caminho = filedialog.asksaveasfilename(
+            parent=self.janela, defaultextension=".txt", initialfile=f"Relatório QA - {self.roteiro_atual}.txt",
+            filetypes=[("Texto", "*.txt")],
+        )
+        if caminho:
+            try:
+                exportar_txt(caminho, self.roteiro_atual, self.casos, self.resultados)
+            except OSError as erro:
+                messagebox.showerror("Falha ao exportar TXT", str(erro), parent=self.janela)
 
     def anexar_imagens(self):
         codigo = self.casos[self.indice][0]
